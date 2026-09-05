@@ -61,6 +61,8 @@ public:
     int tilesize;
     int prepadding;
     int syncgap;
+    bool bgr_mode;
+    bool is_pro_model;
 
 private:
     ncnn::VulkanDevice* vkdev;

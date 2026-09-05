@@ -8,6 +8,7 @@
 #endif
 
 layout (constant_id = 0) const int bgr = 0;
+layout (constant_id = 1) const int pro = 0;
 
 #if NCNN_int8_storage
 layout (binding = 0) readonly buffer bottom_blob { uint8_t bottom_blob_data[]; };
@@ -83,8 +84,9 @@ void main()
     }
     else
     {
-        const float norm_val = 1 / 255.f;
+        const float norm_scale = (pro == 1) ? (0.7f / 255.f) : (1.f / 255.f);
+        const float norm_bias = (pro == 1) ? 0.15f : 0.0f;
 
-        buffer_st1(top_blob_data, gz * p.outcstep + gy * p.outw + gx, v * norm_val);
+        buffer_st1(top_blob_data, gz * p.outcstep + gy * p.outw + gx, v * norm_scale + norm_bias);
     }
 }

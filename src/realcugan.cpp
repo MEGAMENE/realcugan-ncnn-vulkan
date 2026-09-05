@@ -1,10 +1,11 @@
-﻿// realcugan implemented with ncnn library
+// realcugan implemented with ncnn library
 
 #include "realcugan.h"
 
 #include <algorithm>
 #include <vector>
 #include <map>
+#include <cstring>
 
 // ncnn
 #include "cpu.h"
@@ -58,6 +59,14 @@ public:
 RealCUGAN::RealCUGAN(int gpuid, bool _tta_mode, int num_threads)
 {
     vkdev = gpuid == -1 ? 0 : ncnn::get_gpu_device(gpuid);
+    if (vkdev)
+    {
+        const char* dev_name = vkdev->info.device_name();
+        if (vkdev->info.type() == 3 || (dev_name && (strstr(dev_name, "llvmpipe") || strstr(dev_name, "lavapipe"))))
+        {
+            vkdev = 0;
+        }
+    }
 
     net.opt.num_threads = num_threads;
 
@@ -68,6 +77,12 @@ RealCUGAN::RealCUGAN(int gpuid, bool _tta_mode, int num_threads)
     bicubic_3x = 0;
     bicubic_4x = 0;
     tta_mode = _tta_mode;
+#if _WIN32
+    bgr_mode = true;
+#else
+    bgr_mode = false;
+#endif
+    is_pro_model = false;
 }
 
 RealCUGAN::~RealCUGAN()
@@ -94,6 +109,12 @@ int RealCUGAN::load(const std::wstring& parampath, const std::wstring& modelpath
 int RealCUGAN::load(const std::string& parampath, const std::string& modelpath)
 #endif
 {
+#if _WIN32
+    is_pro_model = (parampath.find(L"models-pro") != std::wstring::npos || parampath.find(L"-pro") != std::wstring::npos || modelpath.find(L"models-pro") != std::wstring::npos);
+#else
+    is_pro_model = (parampath.find("models-pro") != std::string::npos || parampath.find("-pro") != std::string::npos || modelpath.find("models-pro") != std::string::npos);
+#endif
+
     net.opt.use_vulkan_compute = vkdev ? true : false;
     net.opt.use_fp16_packed = true;
     net.opt.use_fp16_storage = vkdev ? true : false;
@@ -108,37 +129,55 @@ int RealCUGAN::load(const std::string& parampath, const std::string& modelpath)
         if (!fp)
         {
             fwprintf(stderr, L"_wfopen %ls failed\n", parampath.c_str());
+            return -1;
         }
 
-        net.load_param(fp);
-
+        int ret = net.load_param(fp);
         fclose(fp);
+        if (ret != 0)
+        {
+            fwprintf(stderr, L"load_param %ls failed\n", parampath.c_str());
+            return -1;
+        }
     }
     {
         FILE* fp = _wfopen(modelpath.c_str(), L"rb");
         if (!fp)
         {
             fwprintf(stderr, L"_wfopen %ls failed\n", modelpath.c_str());
+            return -1;
         }
 
-        net.load_model(fp);
-
+        int ret = net.load_model(fp);
         fclose(fp);
+        if (ret != 0)
+        {
+            fwprintf(stderr, L"load_model %ls failed\n", modelpath.c_str());
+            return -1;
+        }
     }
 #else
-    net.load_param(parampath.c_str());
-    net.load_model(modelpath.c_str());
+    if (net.load_param(parampath.c_str()) != 0)
+    {
+        fprintf(stderr, "load_param %s failed\n", parampath.c_str());
+        return -1;
+    }
+    if (net.load_model(modelpath.c_str()) != 0)
+    {
+        fprintf(stderr, "load_model %s failed\n", modelpath.c_str());
+        return -1;
+    }
 #endif
 
     // initialize preprocess and postprocess pipeline
     if (vkdev)
     {
-        std::vector<ncnn::vk_specialization_type> specializations(1);
-#if _WIN32
-        specializations[0].i = 1;
-#else
-        specializations[0].i = 0;
-#endif
+        std::vector<ncnn::vk_specialization_type> specializations(2);
+        specializations[0].i = bgr_mode ? 1 : 0;
+        specializations[1].i = is_pro_model ? 1 : 0;
+
+        std::vector<ncnn::vk_specialization_type> specializations_4x(1);
+        specializations_4x[0].i = bgr_mode ? 1 : 0;
 
         {
             static std::vector<uint32_t> spirv;
@@ -194,7 +233,7 @@ int RealCUGAN::load(const std::string& parampath, const std::string& modelpath)
 
             realcugan_4x_postproc = new ncnn::Pipeline(vkdev);
             realcugan_4x_postproc->set_optimal_local_size_xyz(8, 8, 3);
-            realcugan_4x_postproc->create(spirv.data(), spirv.size() * 4, specializations);
+            realcugan_4x_postproc->create(spirv.data(), spirv.size() * 4, specializations_4x);
         }
     }
 
@@ -324,19 +363,11 @@ int RealCUGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
         {
             if (channels == 3)
             {
-#if _WIN32
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_BGR2RGB, w, (in_tile_y1 - in_tile_y0));
-#else
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_RGB, w, (in_tile_y1 - in_tile_y0));
-#endif
+                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, bgr_mode ? ncnn::Mat::PIXEL_BGR2RGB : ncnn::Mat::PIXEL_RGB, w, (in_tile_y1 - in_tile_y0));
             }
             if (channels == 4)
             {
-#if _WIN32
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_BGRA2RGBA, w, (in_tile_y1 - in_tile_y0));
-#else
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_RGBA, w, (in_tile_y1 - in_tile_y0));
-#endif
+                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, bgr_mode ? ncnn::Mat::PIXEL_BGRA2RGBA : ncnn::Mat::PIXEL_RGBA, w, (in_tile_y1 - in_tile_y0));
             }
         }
 
@@ -723,19 +754,11 @@ int RealCUGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
             {
                 if (channels == 3)
                 {
-#if _WIN32
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels, ncnn::Mat::PIXEL_RGB2BGR);
-#else
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels, ncnn::Mat::PIXEL_RGB);
-#endif
+                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels, bgr_mode ? ncnn::Mat::PIXEL_RGB2BGR : ncnn::Mat::PIXEL_RGB);
                 }
                 if (channels == 4)
                 {
-#if _WIN32
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels, ncnn::Mat::PIXEL_RGBA2BGRA);
-#else
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels, ncnn::Mat::PIXEL_RGBA);
-#endif
+                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels, bgr_mode ? ncnn::Mat::PIXEL_RGBA2BGRA : ncnn::Mat::PIXEL_RGBA);
                 }
             }
         }
@@ -808,21 +831,12 @@ int RealCUGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
             {
                 if (channels == 3)
                 {
-#if _WIN32
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_BGR2RGB, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#else
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_RGB, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#endif
+                    in = ncnn::Mat::from_pixels_roi(pixeldata, bgr_mode ? ncnn::Mat::PIXEL_BGR2RGB : ncnn::Mat::PIXEL_RGB, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
                 }
                 if (channels == 4)
                 {
-#if _WIN32
-                    in_nopad = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_BGRA2RGBA, w, h, xi * TILE_SIZE_X, yi * TILE_SIZE_Y, tile_w_nopad, tile_h_nopad);
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_BGRA2RGBA, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#else
-                    in_nopad = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_RGBA, w, h, xi * TILE_SIZE_X, yi * TILE_SIZE_Y, tile_w_nopad, tile_h_nopad);
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_RGBA, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#endif
+                    in_nopad = ncnn::Mat::from_pixels_roi(pixeldata, bgr_mode ? ncnn::Mat::PIXEL_BGRA2RGBA : ncnn::Mat::PIXEL_RGBA, w, h, xi * TILE_SIZE_X, yi * TILE_SIZE_Y, tile_w_nopad, tile_h_nopad);
+                    in = ncnn::Mat::from_pixels_roi(pixeldata, bgr_mode ? ncnn::Mat::PIXEL_BGRA2RGBA : ncnn::Mat::PIXEL_RGBA, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
                 }
             }
 
@@ -834,6 +848,9 @@ int RealCUGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
                 ncnn::Mat in_tile[8];
                 ncnn::Mat in_alpha_tile;
                 {
+                    const float norm_scale = is_pro_model ? (0.7f / 255.f) : (1.f / 255.f);
+                    const float norm_bias = is_pro_model ? 0.15f : 0.0f;
+
                     in_tile[0].create(in.w, in.h, 3);
                     for (int q = 0; q < 3; q++)
                     {
@@ -844,7 +861,7 @@ int RealCUGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
                         {
                             for (int j = 0; j < in.w; j++)
                             {
-                                *outptr0++ = *ptr++ * (1 / 255.f);
+                                *outptr0++ = *ptr++ * norm_scale + norm_bias;
                             }
                         }
                     }
@@ -982,7 +999,8 @@ int RealCUGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
 
                                     float v = (*ptr0++ + *ptr1++ + *ptr2-- + *ptr3-- + *ptr4 + *ptr5 + *ptr6 + *ptr7) / 8;
 
-                                    *outptr++ = v * 255.f + 0.5f + inptr[j / 4] * 255.f;
+                                    v = v * 255.f + 0.5f + inptr[j / 4] * 255.f;
+                                    *outptr++ = std::max(0.f, std::min(255.f, v));
                                 }
                             }
                         }
@@ -1017,7 +1035,12 @@ int RealCUGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
 
                                     float v = (*ptr0++ + *ptr1++ + *ptr2-- + *ptr3-- + *ptr4 + *ptr5 + *ptr6 + *ptr7) / 8;
 
-                                    *outptr++ = v * 255.f + 0.5f;
+                                    if (is_pro_model)
+                                        v = (v - 0.15f) * (255.f / 0.7f);
+                                    else
+                                        v = v * 255.f;
+
+                                    *outptr++ = std::max(0.f, std::min(255.f, v + 0.5f));
                                 }
                             }
                         }
@@ -1036,6 +1059,9 @@ int RealCUGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
                 ncnn::Mat in_alpha_tile;
                 {
                     in_tile.create(in.w, in.h, 3);
+                    const float norm_scale = is_pro_model ? (0.7f / 255.f) : (1.f / 255.f);
+                    const float norm_bias = is_pro_model ? 0.15f : 0.0f;
+
                     for (int q = 0; q < 3; q++)
                     {
                         const float* ptr = in.channel(q);
@@ -1043,7 +1069,7 @@ int RealCUGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
 
                         for (int i = 0; i < in.w * in.h; i++)
                         {
-                            *outptr++ = *ptr++ * (1 / 255.f);
+                            *outptr++ = *ptr++ * norm_scale + norm_bias;
                         }
                     }
 
@@ -1112,7 +1138,8 @@ int RealCUGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
 
                                 for (int j = 0; j < out.w; j++)
                                 {
-                                    *outptr++ = *ptr++ * 255.f + 0.5f + inptr[j / 4] * 255.f;
+                                    float v = *ptr++ * 255.f + 0.5f + inptr[j / 4] * 255.f;
+                                    *outptr++ = std::max(0.f, std::min(255.f, v));
                                 }
                             }
                         }
@@ -1129,7 +1156,13 @@ int RealCUGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
 
                                 for (int j = 0; j < out.w; j++)
                                 {
-                                    *outptr++ = *ptr++ * 255.f + 0.5f;
+                                    float v = *ptr++;
+                                    if (is_pro_model)
+                                        v = (v - 0.15f) * (255.f / 0.7f);
+                                    else
+                                        v = v * 255.f;
+
+                                    *outptr++ = std::max(0.f, std::min(255.f, v + 0.5f));
                                 }
                             }
                         }
@@ -1145,19 +1178,11 @@ int RealCUGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
             {
                 if (channels == 3)
                 {
-#if _WIN32
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels + (size_t)xi * scale * TILE_SIZE_X * channels, ncnn::Mat::PIXEL_RGB2BGR, w * scale * channels);
-#else
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels + (size_t)xi * scale * TILE_SIZE_X * channels, ncnn::Mat::PIXEL_RGB, w * scale * channels);
-#endif
+                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels + (size_t)xi * scale * TILE_SIZE_X * channels, bgr_mode ? ncnn::Mat::PIXEL_RGB2BGR : ncnn::Mat::PIXEL_RGB, w * scale * channels);
                 }
                 if (channels == 4)
                 {
-#if _WIN32
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels + (size_t)xi * scale * TILE_SIZE_X * channels, ncnn::Mat::PIXEL_RGBA2BGRA, w * scale * channels);
-#else
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels + (size_t)xi * scale * TILE_SIZE_X * channels, ncnn::Mat::PIXEL_RGBA, w * scale * channels);
-#endif
+                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels + (size_t)xi * scale * TILE_SIZE_X * channels, bgr_mode ? ncnn::Mat::PIXEL_RGBA2BGRA : ncnn::Mat::PIXEL_RGBA, w * scale * channels);
                 }
             }
         }
@@ -1398,19 +1423,11 @@ int RealCUGAN::process_se_stage0(const ncnn::Mat& inimage, const std::vector<std
         {
             if (channels == 3)
             {
-#if _WIN32
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_BGR2RGB, w, (in_tile_y1 - in_tile_y0));
-#else
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_RGB, w, (in_tile_y1 - in_tile_y0));
-#endif
+                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, bgr_mode ? ncnn::Mat::PIXEL_BGR2RGB : ncnn::Mat::PIXEL_RGB, w, (in_tile_y1 - in_tile_y0));
             }
             if (channels == 4)
             {
-#if _WIN32
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_BGRA2RGBA, w, (in_tile_y1 - in_tile_y0));
-#else
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_RGBA, w, (in_tile_y1 - in_tile_y0));
-#endif
+                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, bgr_mode ? ncnn::Mat::PIXEL_BGRA2RGBA : ncnn::Mat::PIXEL_RGBA, w, (in_tile_y1 - in_tile_y0));
             }
         }
 
@@ -1677,19 +1694,11 @@ int RealCUGAN::process_se_stage2(const ncnn::Mat& inimage, const std::vector<std
         {
             if (channels == 3)
             {
-#if _WIN32
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_BGR2RGB, w, (in_tile_y1 - in_tile_y0));
-#else
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_RGB, w, (in_tile_y1 - in_tile_y0));
-#endif
+                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, bgr_mode ? ncnn::Mat::PIXEL_BGR2RGB : ncnn::Mat::PIXEL_RGB, w, (in_tile_y1 - in_tile_y0));
             }
             if (channels == 4)
             {
-#if _WIN32
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_BGRA2RGBA, w, (in_tile_y1 - in_tile_y0));
-#else
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_RGBA, w, (in_tile_y1 - in_tile_y0));
-#endif
+                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, bgr_mode ? ncnn::Mat::PIXEL_BGRA2RGBA : ncnn::Mat::PIXEL_RGBA, w, (in_tile_y1 - in_tile_y0));
             }
         }
 
@@ -2092,19 +2101,11 @@ int RealCUGAN::process_se_stage2(const ncnn::Mat& inimage, const std::vector<std
             {
                 if (channels == 3)
                 {
-#if _WIN32
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels, ncnn::Mat::PIXEL_RGB2BGR);
-#else
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels, ncnn::Mat::PIXEL_RGB);
-#endif
+                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels, bgr_mode ? ncnn::Mat::PIXEL_RGB2BGR : ncnn::Mat::PIXEL_RGB);
                 }
                 if (channels == 4)
                 {
-#if _WIN32
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels, ncnn::Mat::PIXEL_RGBA2BGRA);
-#else
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels, ncnn::Mat::PIXEL_RGBA);
-#endif
+                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels, bgr_mode ? ncnn::Mat::PIXEL_RGBA2BGRA : ncnn::Mat::PIXEL_RGBA);
                 }
             }
         }
@@ -2298,19 +2299,11 @@ int RealCUGAN::process_se_very_rough_stage0(const ncnn::Mat& inimage, const std:
         {
             if (channels == 3)
             {
-#if _WIN32
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_BGR2RGB, w, (in_tile_y1 - in_tile_y0));
-#else
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_RGB, w, (in_tile_y1 - in_tile_y0));
-#endif
+                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, bgr_mode ? ncnn::Mat::PIXEL_BGR2RGB : ncnn::Mat::PIXEL_RGB, w, (in_tile_y1 - in_tile_y0));
             }
             if (channels == 4)
             {
-#if _WIN32
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_BGRA2RGBA, w, (in_tile_y1 - in_tile_y0));
-#else
-                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, ncnn::Mat::PIXEL_RGBA, w, (in_tile_y1 - in_tile_y0));
-#endif
+                in = ncnn::Mat::from_pixels(pixeldata + (size_t)in_tile_y0 * w * channels, bgr_mode ? ncnn::Mat::PIXEL_BGRA2RGBA : ncnn::Mat::PIXEL_RGBA, w, (in_tile_y1 - in_tile_y0));
             }
         }
 
@@ -2747,21 +2740,12 @@ int RealCUGAN::process_cpu_se_stage0(const ncnn::Mat& inimage, const std::vector
             {
                 if (channels == 3)
                 {
-#if _WIN32
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_BGR2RGB, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#else
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_RGB, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#endif
+                    in = ncnn::Mat::from_pixels_roi(pixeldata, bgr_mode ? ncnn::Mat::PIXEL_BGR2RGB : ncnn::Mat::PIXEL_RGB, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
                 }
                 if (channels == 4)
                 {
-#if _WIN32
-                    in_nopad = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_BGRA2RGBA, w, h, xi * TILE_SIZE_X, yi * TILE_SIZE_Y, tile_w_nopad, tile_h_nopad);
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_BGRA2RGBA, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#else
-                    in_nopad = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_RGBA, w, h, xi * TILE_SIZE_X, yi * TILE_SIZE_Y, tile_w_nopad, tile_h_nopad);
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_RGBA, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#endif
+                    in_nopad = ncnn::Mat::from_pixels_roi(pixeldata, bgr_mode ? ncnn::Mat::PIXEL_BGRA2RGBA : ncnn::Mat::PIXEL_RGBA, w, h, xi * TILE_SIZE_X, yi * TILE_SIZE_Y, tile_w_nopad, tile_h_nopad);
+                    in = ncnn::Mat::from_pixels_roi(pixeldata, bgr_mode ? ncnn::Mat::PIXEL_BGRA2RGBA : ncnn::Mat::PIXEL_RGBA, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
                 }
             }
 
@@ -2999,21 +2983,12 @@ int RealCUGAN::process_cpu_se_stage2(const ncnn::Mat& inimage, const std::vector
             {
                 if (channels == 3)
                 {
-#if _WIN32
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_BGR2RGB, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#else
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_RGB, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#endif
+                    in = ncnn::Mat::from_pixels_roi(pixeldata, bgr_mode ? ncnn::Mat::PIXEL_BGR2RGB : ncnn::Mat::PIXEL_RGB, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
                 }
                 if (channels == 4)
                 {
-#if _WIN32
-                    in_nopad = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_BGRA2RGBA, w, h, xi * TILE_SIZE_X, yi * TILE_SIZE_Y, tile_w_nopad, tile_h_nopad);
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_BGRA2RGBA, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#else
-                    in_nopad = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_RGBA, w, h, xi * TILE_SIZE_X, yi * TILE_SIZE_Y, tile_w_nopad, tile_h_nopad);
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_RGBA, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#endif
+                    in_nopad = ncnn::Mat::from_pixels_roi(pixeldata, bgr_mode ? ncnn::Mat::PIXEL_BGRA2RGBA : ncnn::Mat::PIXEL_RGBA, w, h, xi * TILE_SIZE_X, yi * TILE_SIZE_Y, tile_w_nopad, tile_h_nopad);
+                    in = ncnn::Mat::from_pixels_roi(pixeldata, bgr_mode ? ncnn::Mat::PIXEL_BGRA2RGBA : ncnn::Mat::PIXEL_RGBA, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
                 }
             }
 
@@ -3352,19 +3327,11 @@ int RealCUGAN::process_cpu_se_stage2(const ncnn::Mat& inimage, const std::vector
             {
                 if (channels == 3)
                 {
-#if _WIN32
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels + (size_t)xi * scale * TILE_SIZE_X * channels, ncnn::Mat::PIXEL_RGB2BGR, w * scale * channels);
-#else
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels + (size_t)xi * scale * TILE_SIZE_X * channels, ncnn::Mat::PIXEL_RGB, w * scale * channels);
-#endif
+                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels + (size_t)xi * scale * TILE_SIZE_X * channels, bgr_mode ? ncnn::Mat::PIXEL_RGB2BGR : ncnn::Mat::PIXEL_RGB, w * scale * channels);
                 }
                 if (channels == 4)
                 {
-#if _WIN32
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels + (size_t)xi * scale * TILE_SIZE_X * channels, ncnn::Mat::PIXEL_RGBA2BGRA, w * scale * channels);
-#else
-                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels + (size_t)xi * scale * TILE_SIZE_X * channels, ncnn::Mat::PIXEL_RGBA, w * scale * channels);
-#endif
+                    out.to_pixels((unsigned char*)outimage.data + (size_t)yi * scale * TILE_SIZE_Y * w * scale * channels + (size_t)xi * scale * TILE_SIZE_X * channels, bgr_mode ? ncnn::Mat::PIXEL_RGBA2BGRA : ncnn::Mat::PIXEL_RGBA, w * scale * channels);
                 }
             }
         }
@@ -3533,21 +3500,12 @@ int RealCUGAN::process_cpu_se_very_rough_stage0(const ncnn::Mat& inimage, const 
             {
                 if (channels == 3)
                 {
-#if _WIN32
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_BGR2RGB, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#else
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_RGB, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#endif
+                    in = ncnn::Mat::from_pixels_roi(pixeldata, bgr_mode ? ncnn::Mat::PIXEL_BGR2RGB : ncnn::Mat::PIXEL_RGB, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
                 }
                 if (channels == 4)
                 {
-#if _WIN32
-                    in_nopad = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_BGRA2RGBA, w, h, xi * TILE_SIZE_X, yi * TILE_SIZE_Y, tile_w_nopad, tile_h_nopad);
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_BGRA2RGBA, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#else
-                    in_nopad = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_RGBA, w, h, xi * TILE_SIZE_X, yi * TILE_SIZE_Y, tile_w_nopad, tile_h_nopad);
-                    in = ncnn::Mat::from_pixels_roi(pixeldata, ncnn::Mat::PIXEL_RGBA, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
-#endif
+                    in_nopad = ncnn::Mat::from_pixels_roi(pixeldata, bgr_mode ? ncnn::Mat::PIXEL_BGRA2RGBA : ncnn::Mat::PIXEL_RGBA, w, h, xi * TILE_SIZE_X, yi * TILE_SIZE_Y, tile_w_nopad, tile_h_nopad);
+                    in = ncnn::Mat::from_pixels_roi(pixeldata, bgr_mode ? ncnn::Mat::PIXEL_BGRA2RGBA : ncnn::Mat::PIXEL_RGBA, w, h, in_tile_x0, in_tile_y0, in_tile_x1 - in_tile_x0, in_tile_y1 - in_tile_y0);
                 }
             }
 
