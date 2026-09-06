@@ -120,6 +120,11 @@ int RealCUGAN::load(const std::string& parampath, const std::string& modelpath)
     net.opt.use_fp16_storage = vkdev ? true : false;
     net.opt.use_fp16_arithmetic = false;
     net.opt.use_int8_storage = true;
+    net.opt.use_cooperative_matrix = true;
+    net.opt.use_shader_local_memory = true;
+    net.opt.flush_denormals = 3;
+    net.opt.use_winograd_convolution = true;
+    net.opt.use_sgemm_convolution = true;
 
     net.set_vulkan_device(vkdev);
 
