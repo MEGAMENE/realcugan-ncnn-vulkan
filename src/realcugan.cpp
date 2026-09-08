@@ -91,6 +91,7 @@ RealCUGAN::~RealCUGAN()
     {
         delete realcugan_preproc;
         delete realcugan_postproc;
+        delete realcugan_4x_postproc;
     }
 
     bicubic_2x->destroy_pipeline(net.opt);
