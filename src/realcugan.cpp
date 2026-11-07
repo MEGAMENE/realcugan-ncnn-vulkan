@@ -94,14 +94,23 @@ RealCUGAN::~RealCUGAN()
         delete realcugan_4x_postproc;
     }
 
-    bicubic_2x->destroy_pipeline(net.opt);
-    delete bicubic_2x;
+    if (bicubic_2x)
+    {
+        bicubic_2x->destroy_pipeline(net.opt);
+        delete bicubic_2x;
+    }
 
-    bicubic_3x->destroy_pipeline(net.opt);
-    delete bicubic_3x;
+    if (bicubic_3x)
+    {
+        bicubic_3x->destroy_pipeline(net.opt);
+        delete bicubic_3x;
+    }
 
-    bicubic_4x->destroy_pipeline(net.opt);
-    delete bicubic_4x;
+    if (bicubic_4x)
+    {
+        bicubic_4x->destroy_pipeline(net.opt);
+        delete bicubic_4x;
+    }
 }
 
 #if _WIN32
@@ -185,61 +194,63 @@ int RealCUGAN::load(const std::string& parampath, const std::string& modelpath)
         std::vector<ncnn::vk_specialization_type> specializations_4x(1);
         specializations_4x[0].i = bgr_mode ? 1 : 0;
 
+        const int tta_idx = tta_mode ? 1 : 0;
+
         {
-            static std::vector<uint32_t> spirv;
+            static std::vector<uint32_t> spirv[2];
             static ncnn::Mutex lock;
             {
                 ncnn::MutexLockGuard guard(lock);
-                if (spirv.empty())
+                if (spirv[tta_idx].empty())
                 {
                     if (tta_mode)
-                        compile_spirv_module(realcugan_preproc_tta_comp_data, sizeof(realcugan_preproc_tta_comp_data), net.opt, spirv);
+                        compile_spirv_module(realcugan_preproc_tta_comp_data, sizeof(realcugan_preproc_tta_comp_data), net.opt, spirv[tta_idx]);
                     else
-                        compile_spirv_module(realcugan_preproc_comp_data, sizeof(realcugan_preproc_comp_data), net.opt, spirv);
+                        compile_spirv_module(realcugan_preproc_comp_data, sizeof(realcugan_preproc_comp_data), net.opt, spirv[tta_idx]);
                 }
             }
 
             realcugan_preproc = new ncnn::Pipeline(vkdev);
             realcugan_preproc->set_optimal_local_size_xyz(8, 8, 3);
-            realcugan_preproc->create(spirv.data(), spirv.size() * 4, specializations);
+            realcugan_preproc->create(spirv[tta_idx].data(), spirv[tta_idx].size() * 4, specializations);
         }
 
         {
-            static std::vector<uint32_t> spirv;
+            static std::vector<uint32_t> spirv[2];
             static ncnn::Mutex lock;
             {
                 ncnn::MutexLockGuard guard(lock);
-                if (spirv.empty())
+                if (spirv[tta_idx].empty())
                 {
                     if (tta_mode)
-                        compile_spirv_module(realcugan_postproc_tta_comp_data, sizeof(realcugan_postproc_tta_comp_data), net.opt, spirv);
+                        compile_spirv_module(realcugan_postproc_tta_comp_data, sizeof(realcugan_postproc_tta_comp_data), net.opt, spirv[tta_idx]);
                     else
-                        compile_spirv_module(realcugan_postproc_comp_data, sizeof(realcugan_postproc_comp_data), net.opt, spirv);
+                        compile_spirv_module(realcugan_postproc_comp_data, sizeof(realcugan_postproc_comp_data), net.opt, spirv[tta_idx]);
                 }
             }
 
             realcugan_postproc = new ncnn::Pipeline(vkdev);
             realcugan_postproc->set_optimal_local_size_xyz(8, 8, 3);
-            realcugan_postproc->create(spirv.data(), spirv.size() * 4, specializations);
+            realcugan_postproc->create(spirv[tta_idx].data(), spirv[tta_idx].size() * 4, specializations);
         }
 
         {
-            static std::vector<uint32_t> spirv;
+            static std::vector<uint32_t> spirv[2];
             static ncnn::Mutex lock;
             {
                 ncnn::MutexLockGuard guard(lock);
-                if (spirv.empty())
+                if (spirv[tta_idx].empty())
                 {
                     if (tta_mode)
-                        compile_spirv_module(realcugan_4x_postproc_tta_comp_data, sizeof(realcugan_4x_postproc_tta_comp_data), net.opt, spirv);
+                        compile_spirv_module(realcugan_4x_postproc_tta_comp_data, sizeof(realcugan_4x_postproc_tta_comp_data), net.opt, spirv[tta_idx]);
                     else
-                        compile_spirv_module(realcugan_4x_postproc_comp_data, sizeof(realcugan_4x_postproc_comp_data), net.opt, spirv);
+                        compile_spirv_module(realcugan_4x_postproc_comp_data, sizeof(realcugan_4x_postproc_comp_data), net.opt, spirv[tta_idx]);
                 }
             }
 
             realcugan_4x_postproc = new ncnn::Pipeline(vkdev);
             realcugan_4x_postproc->set_optimal_local_size_xyz(8, 8, 3);
-            realcugan_4x_postproc->create(spirv.data(), spirv.size() * 4, specializations_4x);
+            realcugan_4x_postproc->create(spirv[tta_idx].data(), spirv[tta_idx].size() * 4, specializations_4x);
         }
     }
 
@@ -306,7 +317,14 @@ int RealCUGAN::process(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
 
     if (noise == -1 && scale == 1)
     {
-        outimage = inimage;
+        if (outimage.data && inimage.data && outimage.data != inimage.data)
+        {
+            memcpy(outimage.data, inimage.data, (size_t)inimage.w * inimage.h * inimage.elempack);
+        }
+        else
+        {
+            outimage = inimage;
+        }
         return 0;
     }
 
@@ -780,7 +798,14 @@ int RealCUGAN::process_cpu(const ncnn::Mat& inimage, ncnn::Mat& outimage) const
 {
     if (noise == -1 && scale == 1)
     {
-        outimage = inimage;
+        if (outimage.data && inimage.data && outimage.data != inimage.data)
+        {
+            memcpy(outimage.data, inimage.data, (size_t)inimage.w * inimage.h * inimage.elempack);
+        }
+        else
+        {
+            outimage = inimage;
+        }
         return 0;
     }
 
@@ -1451,19 +1476,6 @@ int RealCUGAN::process_se_stage0(const ncnn::Mat& inimage, const std::vector<std
             }
         }
 
-        int out_tile_y0 = std::max(yi * TILE_SIZE_Y, 0);
-        int out_tile_y1 = std::min((yi + 1) * TILE_SIZE_Y, h);
-
-        ncnn::VkMat out_gpu;
-        if ((opt.use_fp16_storage || opt.use_fp16_packed) && opt.use_int8_storage)
-        {
-            out_gpu.create(w * scale, (out_tile_y1 - out_tile_y0) * scale, (size_t)channels, 1, opt.blob_vkallocator);
-        }
-        else
-        {
-            out_gpu.create(w * scale, (out_tile_y1 - out_tile_y0) * scale, channels, (size_t)4u, 1, opt.blob_vkallocator);
-        }
-
         for (int xi = 0; xi < xtiles; xi++)
         {
             const int tile_w_nopad = std::min((xi + 1) * TILE_SIZE_X, w) - xi * TILE_SIZE_X;
@@ -1650,8 +1662,11 @@ int RealCUGAN::process_se_stage0(const ncnn::Mat& inimage, const std::vector<std
             }
         }
 
-        cmd.submit_and_wait();
-        cmd.reset();
+        if (xtiles <= 1)
+        {
+            cmd.submit_and_wait();
+            cmd.reset();
+        }
     }
 
     return 0;
@@ -2299,8 +2314,8 @@ int RealCUGAN::process_se_very_rough_stage0(const ncnn::Mat& inimage, const std:
     const int h = inimage.h;
     const int channels = inimage.elempack;
 
-    const int TILE_SIZE_X = 32;
-    const int TILE_SIZE_Y = 32;
+    const int TILE_SIZE_X = tilesize;
+    const int TILE_SIZE_Y = tilesize;
 
     // each tile 400x400
     const int xtiles = (w + TILE_SIZE_X - 1) / TILE_SIZE_X;
@@ -2309,7 +2324,7 @@ int RealCUGAN::process_se_very_rough_stage0(const ncnn::Mat& inimage, const std:
     const size_t in_out_tile_elemsize = (opt.use_fp16_storage || opt.use_fp16_packed) ? 2u : 4u;
 
     //#pragma omp parallel for num_threads(2)
-    for (int yi = 0; yi + 2 < ytiles; yi += 3)
+    for (int yi = 0; yi < ytiles; yi += 2)
     {
         const int tile_h_nopad = std::min((yi + 1) * TILE_SIZE_Y, h) - yi * TILE_SIZE_Y;
 
@@ -2357,20 +2372,7 @@ int RealCUGAN::process_se_very_rough_stage0(const ncnn::Mat& inimage, const std:
             }
         }
 
-        int out_tile_y0 = std::max(yi * TILE_SIZE_Y, 0);
-        int out_tile_y1 = std::min((yi + 1) * TILE_SIZE_Y, h);
-
-        ncnn::VkMat out_gpu;
-        if ((opt.use_fp16_storage || opt.use_fp16_packed) && opt.use_int8_storage)
-        {
-            out_gpu.create(w * scale, (out_tile_y1 - out_tile_y0) * scale, (size_t)channels, 1, opt.blob_vkallocator);
-        }
-        else
-        {
-            out_gpu.create(w * scale, (out_tile_y1 - out_tile_y0) * scale, channels, (size_t)4u, 1, opt.blob_vkallocator);
-        }
-
-        for (int xi = 0; xi + 2 < xtiles; xi += 3)
+        for (int xi = 0; xi < xtiles; xi += 2)
         {
             const int tile_w_nopad = std::min((xi + 1) * TILE_SIZE_X, w) - xi * TILE_SIZE_X;
 
@@ -2556,8 +2558,11 @@ int RealCUGAN::process_se_very_rough_stage0(const ncnn::Mat& inimage, const std:
             }
         }
 
-        cmd.submit_and_wait();
-        cmd.reset();
+        if (xtiles <= 1)
+        {
+            cmd.submit_and_wait();
+            cmd.reset();
+        }
     }
 
     return 0;
@@ -2570,44 +2575,55 @@ int RealCUGAN::process_se_very_rough_sync_gap(const ncnn::Mat& inimage, const st
     const int h = inimage.h;
     const int channels = inimage.elempack;
 
-    const int TILE_SIZE_X = 32;
-    const int TILE_SIZE_Y = 32;
+    const int TILE_SIZE_X = tilesize;
+    const int TILE_SIZE_Y = tilesize;
 
     // each tile 400x400
     const int xtiles = (w + TILE_SIZE_X - 1) / TILE_SIZE_X;
     const int ytiles = (h + TILE_SIZE_Y - 1) / TILE_SIZE_Y;
 
     std::vector< std::vector<ncnn::VkMat> > feats(names.size());
-    for (int yi = 0; yi + 2 < ytiles; yi += 3)
-    {
-        for (int xi = 0; xi + 2 < xtiles; xi += 3)
-        {
-            {
-                for (size_t i = 0; i < names.size(); i++)
-                {
-                    if (tta_mode)
-                    {
-                        for (int ti = 0; ti < 8; ti++)
-                        {
-                            ncnn::VkMat feat;
-                            cache.load(yi, xi, ti, names[i], feat);
+    std::vector<float> tile_weights;
+    float total_weight = 0.f;
 
-                            feats[i].push_back(feat);
-                        }
-                    }
-                    else
+    for (int yi = 0; yi < ytiles; yi += 2)
+    {
+        const int tile_h_nopad = std::min((yi + 1) * TILE_SIZE_Y, h) - yi * TILE_SIZE_Y;
+        for (int xi = 0; xi < xtiles; xi += 2)
+        {
+            const int tile_w_nopad = std::min((xi + 1) * TILE_SIZE_X, w) - xi * TILE_SIZE_X;
+            const float area = (float)(tile_w_nopad * tile_h_nopad);
+            const int tta_count = tta_mode ? 8 : 1;
+            for (int ti = 0; ti < tta_count; ti++)
+            {
+                tile_weights.push_back(area);
+                total_weight += area;
+            }
+
+            for (size_t i = 0; i < names.size(); i++)
+            {
+                if (tta_mode)
+                {
+                    for (int ti = 0; ti < 8; ti++)
                     {
                         ncnn::VkMat feat;
-                        cache.load(yi, xi, 0, names[i], feat);
+                        cache.load(yi, xi, ti, names[i], feat);
 
                         feats[i].push_back(feat);
                     }
+                }
+                else
+                {
+                    ncnn::VkMat feat;
+                    cache.load(yi, xi, 0, names[i], feat);
+
+                    feats[i].push_back(feat);
                 }
             }
         }
     }
 
-    const int tiles = (ytiles / 3) * (xtiles / 3) * (tta_mode ? 8 : 1);
+    const int tiles = (int)tile_weights.size();
 
     ncnn::VkCompute cmd(vkdev);
 
@@ -2659,16 +2675,27 @@ int RealCUGAN::process_se_very_rough_sync_gap(const ncnn::Mat& inimage, const st
             for (int j = 0; j < tiles; j++)
             {
                 const ncnn::Mat f = feats_cpu[i][j];
+                const float w_j = tile_weights[j];
 
                 for (int k = 0; k < len; k++)
                 {
-                    avgfeat[k] += f[k];
+                    avgfeat[k] += f[k] * w_j;
                 }
             }
 
-            for (int k = 0; k < len; k++)
+            if (total_weight > 0.f)
             {
-                avgfeat[k] /= tiles;
+                for (int k = 0; k < len; k++)
+                {
+                    avgfeat[k] /= total_weight;
+                }
+            }
+            else if (tiles > 0)
+            {
+                for (int k = 0; k < len; k++)
+                {
+                    avgfeat[k] /= tiles;
+                }
             }
 
             cmd.record_upload(avgfeat, avgfeats[i], opt);
@@ -2678,41 +2705,22 @@ int RealCUGAN::process_se_very_rough_sync_gap(const ncnn::Mat& inimage, const st
     cmd.submit_and_wait();
     cmd.reset();
 
-
-    for (int yi = 0; yi + 2 < ytiles; yi += 3)
+    for (int yi = 0; yi < ytiles; yi++)
     {
-        for (int xi = 0; xi + 2 < xtiles; xi += 3)
+        for (int xi = 0; xi < xtiles; xi++)
         {
+            for (size_t i = 0; i < names.size(); i++)
             {
-                for (size_t i = 0; i < names.size(); i++)
+                if (tta_mode)
                 {
-                    if (tta_mode)
+                    for (int ti = 0; ti < 8; ti++)
                     {
-                        for (int ti = 0; ti < 8; ti++)
-                        {
-                            cache.save(yi, xi, ti, names[i], avgfeats[i]);
-                            cache.save(yi, xi + 1, ti, names[i], avgfeats[i]);
-                            cache.save(yi, xi + 2, ti, names[i], avgfeats[i]);
-                            cache.save(yi + 1, xi, ti, names[i], avgfeats[i]);
-                            cache.save(yi + 1, xi + 1, ti, names[i], avgfeats[i]);
-                            cache.save(yi + 1, xi + 2, ti, names[i], avgfeats[i]);
-                            cache.save(yi + 2, xi, ti, names[i], avgfeats[i]);
-                            cache.save(yi + 2, xi + 1, ti, names[i], avgfeats[i]);
-                            cache.save(yi + 2, xi + 2, ti, names[i], avgfeats[i]);
-                        }
+                        cache.save(yi, xi, ti, names[i], avgfeats[i]);
                     }
-                    else
-                    {
-                        cache.save(yi, xi, 0, names[i], avgfeats[i]);
-                        cache.save(yi, xi + 1, 0, names[i], avgfeats[i]);
-                        cache.save(yi, xi + 2, 0, names[i], avgfeats[i]);
-                        cache.save(yi + 1, xi, 0, names[i], avgfeats[i]);
-                        cache.save(yi + 1, xi + 1, 0, names[i], avgfeats[i]);
-                        cache.save(yi + 1, xi + 2, 0, names[i], avgfeats[i]);
-                        cache.save(yi + 2, xi, 0, names[i], avgfeats[i]);
-                        cache.save(yi + 2, xi + 1, 0, names[i], avgfeats[i]);
-                        cache.save(yi + 2, xi + 2, 0, names[i], avgfeats[i]);
-                    }
+                }
+                else
+                {
+                    cache.save(yi, xi, 0, names[i], avgfeats[i]);
                 }
             }
         }
@@ -2799,11 +2807,14 @@ int RealCUGAN::process_cpu_se_stage0(const ncnn::Mat& inimage, const std::vector
                         const float* ptr = in.channel(q);
                         float* outptr0 = in_tile[0].channel(q);
 
+                        const float norm_scale = is_pro_model ? (0.7f / 255.f) : (1.f / 255.f);
+                        const float norm_bias = is_pro_model ? 0.15f : 0.0f;
+
                         for (int i = 0; i < in.h; i++)
                         {
                             for (int j = 0; j < in.w; j++)
                             {
-                                *outptr0++ = *ptr++ * (1 / 255.f);
+                                *outptr0++ = *ptr++ * norm_scale + norm_bias;
                             }
                         }
                     }
@@ -2912,9 +2923,12 @@ int RealCUGAN::process_cpu_se_stage0(const ncnn::Mat& inimage, const std::vector
                         const float* ptr = in.channel(q);
                         float* outptr = in_tile.channel(q);
 
+                        const float norm_scale = is_pro_model ? (0.7f / 255.f) : (1.f / 255.f);
+                        const float norm_bias = is_pro_model ? 0.15f : 0.0f;
+
                         for (int i = 0; i < in.w * in.h; i++)
                         {
-                            *outptr++ = *ptr++ * (1 / 255.f);
+                            *outptr++ = *ptr++ * norm_scale + norm_bias;
                         }
                     }
 
@@ -3042,11 +3056,14 @@ int RealCUGAN::process_cpu_se_stage2(const ncnn::Mat& inimage, const std::vector
                         const float* ptr = in.channel(q);
                         float* outptr0 = in_tile[0].channel(q);
 
+                        const float norm_scale = is_pro_model ? (0.7f / 255.f) : (1.f / 255.f);
+                        const float norm_bias = is_pro_model ? 0.15f : 0.0f;
+
                         for (int i = 0; i < in.h; i++)
                         {
                             for (int j = 0; j < in.w; j++)
                             {
-                                *outptr0++ = *ptr++ * (1 / 255.f);
+                                *outptr0++ = *ptr++ * norm_scale + norm_bias;
                             }
                         }
                     }
@@ -3192,7 +3209,12 @@ int RealCUGAN::process_cpu_se_stage2(const ncnn::Mat& inimage, const std::vector
 
                                     float v = (*ptr0++ + *ptr1++ + *ptr2-- + *ptr3-- + *ptr4 + *ptr5 + *ptr6 + *ptr7) / 8;
 
-                                    *outptr++ = v * 255.f + 0.5f + inptr[j / 4] * 255.f;
+                                    if (is_pro_model)
+                                        v = (v + inptr[j / 4] - 0.15f) * (255.f / 0.7f);
+                                    else
+                                        v = (v + inptr[j / 4]) * 255.f;
+
+                                    *outptr++ = std::max(0.f, std::min(255.f, v + 0.5f));
                                 }
                             }
                         }
@@ -3227,7 +3249,12 @@ int RealCUGAN::process_cpu_se_stage2(const ncnn::Mat& inimage, const std::vector
 
                                     float v = (*ptr0++ + *ptr1++ + *ptr2-- + *ptr3-- + *ptr4 + *ptr5 + *ptr6 + *ptr7) / 8;
 
-                                    *outptr++ = v * 255.f + 0.5f;
+                                    if (is_pro_model)
+                                        v = (v - 0.15f) * (255.f / 0.7f);
+                                    else
+                                        v = v * 255.f;
+
+                                    *outptr++ = std::max(0.f, std::min(255.f, v + 0.5f));
                                 }
                             }
                         }
@@ -3251,9 +3278,12 @@ int RealCUGAN::process_cpu_se_stage2(const ncnn::Mat& inimage, const std::vector
                         const float* ptr = in.channel(q);
                         float* outptr = in_tile.channel(q);
 
+                        const float norm_scale = is_pro_model ? (0.7f / 255.f) : (1.f / 255.f);
+                        const float norm_bias = is_pro_model ? 0.15f : 0.0f;
+
                         for (int i = 0; i < in.w * in.h; i++)
                         {
-                            *outptr++ = *ptr++ * (1 / 255.f);
+                            *outptr++ = *ptr++ * norm_scale + norm_bias;
                         }
                     }
 
@@ -3330,7 +3360,12 @@ int RealCUGAN::process_cpu_se_stage2(const ncnn::Mat& inimage, const std::vector
 
                                 for (int j = 0; j < out.w; j++)
                                 {
-                                    *outptr++ = *ptr++ * 255.f + 0.5f + inptr[j / 4] * 255.f;
+                                    float v = *ptr++ + inptr[j / 4];
+                                    if (is_pro_model)
+                                        v = (v - 0.15f) * (255.f / 0.7f);
+                                    else
+                                        v = v * 255.f;
+                                    *outptr++ = std::max(0.f, std::min(255.f, v + 0.5f));
                                 }
                             }
                         }
@@ -3347,7 +3382,12 @@ int RealCUGAN::process_cpu_se_stage2(const ncnn::Mat& inimage, const std::vector
 
                                 for (int j = 0; j < out.w; j++)
                                 {
-                                    *outptr++ = *ptr++ * 255.f + 0.5f;
+                                    float v = *ptr++;
+                                    if (is_pro_model)
+                                        v = (v - 0.15f) * (255.f / 0.7f);
+                                    else
+                                        v = v * 255.f;
+                                    *outptr++ = std::max(0.f, std::min(255.f, v + 0.5f));
                                 }
                             }
                         }
@@ -3518,8 +3558,8 @@ int RealCUGAN::process_cpu_se_very_rough_stage0(const ncnn::Mat& inimage, const 
     const int h = inimage.h;
     const int channels = inimage.elempack;
 
-    const int TILE_SIZE_X = 32;
-    const int TILE_SIZE_Y = 32;
+    const int TILE_SIZE_X = tilesize;
+    const int TILE_SIZE_Y = tilesize;
 
     ncnn::Option opt = net.opt;
 
@@ -3527,7 +3567,7 @@ int RealCUGAN::process_cpu_se_very_rough_stage0(const ncnn::Mat& inimage, const 
     const int xtiles = (w + TILE_SIZE_X - 1) / TILE_SIZE_X;
     const int ytiles = (h + TILE_SIZE_Y - 1) / TILE_SIZE_Y;
 
-    for (int yi = 0; yi + 2 < ytiles; yi += 3)
+    for (int yi = 0; yi < ytiles; yi += 2)
     {
         const int tile_h_nopad = std::min((yi + 1) * TILE_SIZE_Y, h) - yi * TILE_SIZE_Y;
 
@@ -3544,7 +3584,7 @@ int RealCUGAN::process_cpu_se_very_rough_stage0(const ncnn::Mat& inimage, const 
         int in_tile_y0 = std::max(yi * TILE_SIZE_Y - prepadding, 0);
         int in_tile_y1 = std::min((yi + 1) * TILE_SIZE_Y + prepadding_bottom, h);
 
-        for (int xi = 0; xi + 2 < xtiles; xi += 3)
+        for (int xi = 0; xi < xtiles; xi += 2)
         {
             const int tile_w_nopad = std::min((xi + 1) * TILE_SIZE_X, w) - xi * TILE_SIZE_X;
 
@@ -3589,11 +3629,14 @@ int RealCUGAN::process_cpu_se_very_rough_stage0(const ncnn::Mat& inimage, const 
                         const float* ptr = in.channel(q);
                         float* outptr0 = in_tile[0].channel(q);
 
+                        const float norm_scale = is_pro_model ? (0.7f / 255.f) : (1.f / 255.f);
+                        const float norm_bias = is_pro_model ? 0.15f : 0.0f;
+
                         for (int i = 0; i < in.h; i++)
                         {
                             for (int j = 0; j < in.w; j++)
                             {
-                                *outptr0++ = *ptr++ * (1 / 255.f);
+                                *outptr0++ = *ptr++ * norm_scale + norm_bias;
                             }
                         }
                     }
@@ -3702,9 +3745,12 @@ int RealCUGAN::process_cpu_se_very_rough_stage0(const ncnn::Mat& inimage, const 
                         const float* ptr = in.channel(q);
                         float* outptr = in_tile.channel(q);
 
+                        const float norm_scale = is_pro_model ? (0.7f / 255.f) : (1.f / 255.f);
+                        const float norm_bias = is_pro_model ? 0.15f : 0.0f;
+
                         for (int i = 0; i < in.w * in.h; i++)
                         {
-                            *outptr++ = *ptr++ * (1 / 255.f);
+                            *outptr++ = *ptr++ * norm_scale + norm_bias;
                         }
                     }
 
@@ -3761,8 +3807,8 @@ int RealCUGAN::process_cpu_se_very_rough_sync_gap(const ncnn::Mat& inimage, cons
     const int h = inimage.h;
     const int channels = inimage.elempack;
 
-    const int TILE_SIZE_X = 32;
-    const int TILE_SIZE_Y = 32;
+    const int TILE_SIZE_X = tilesize;
+    const int TILE_SIZE_Y = tilesize;
 
     ncnn::Option opt = net.opt;
 
@@ -3771,10 +3817,22 @@ int RealCUGAN::process_cpu_se_very_rough_sync_gap(const ncnn::Mat& inimage, cons
     const int ytiles = (h + TILE_SIZE_Y - 1) / TILE_SIZE_Y;
 
     std::vector< std::vector<ncnn::Mat> > feats(names.size());
-    for (int yi = 0; yi + 2 < ytiles; yi += 3)
+    std::vector<float> tile_weights;
+    float total_weight = 0.f;
+    for (int yi = 0; yi < ytiles; yi += 2)
     {
-        for (int xi = 0; xi + 2 < xtiles; xi += 3)
+        const int tile_h_nopad = std::min((yi + 1) * TILE_SIZE_Y, h) - yi * TILE_SIZE_Y;
+        for (int xi = 0; xi < xtiles; xi += 2)
         {
+            const int tile_w_nopad = std::min((xi + 1) * TILE_SIZE_X, w) - xi * TILE_SIZE_X;
+            const float area = (float)(tile_w_nopad * tile_h_nopad);
+            const int tta_count = tta_mode ? 8 : 1;
+            for (int ti = 0; ti < tta_count; ti++)
+            {
+                tile_weights.push_back(area);
+                total_weight += area;
+            }
+
             {
                 for (size_t i = 0; i < names.size(); i++)
                 {
@@ -3800,7 +3858,7 @@ int RealCUGAN::process_cpu_se_very_rough_sync_gap(const ncnn::Mat& inimage, cons
         }
     }
 
-    const int tiles = (ytiles / 3) * (xtiles / 3) * (tta_mode ? 8 : 1);
+    const int tiles = (int)tile_weights.size();
 
     // global average
     std::vector<ncnn::Mat> avgfeats(names.size());
@@ -3817,25 +3875,36 @@ int RealCUGAN::process_cpu_se_very_rough_sync_gap(const ncnn::Mat& inimage, cons
             for (int j = 0; j < tiles; j++)
             {
                 const ncnn::Mat f = feats[i][j];
+                const float w_j = tile_weights[j];
 
                 for (int k = 0; k < len; k++)
                 {
-                    avgfeat[k] += f[k];
+                    avgfeat[k] += f[k] * w_j;
                 }
             }
 
-            for (int k = 0; k < len; k++)
+            if (total_weight > 0.f)
             {
-                avgfeat[k] /= tiles;
+                for (int k = 0; k < len; k++)
+                {
+                    avgfeat[k] /= total_weight;
+                }
+            }
+            else if (tiles > 0)
+            {
+                for (int k = 0; k < len; k++)
+                {
+                    avgfeat[k] /= tiles;
+                }
             }
 
             avgfeats[i] = avgfeat;
         }
     }
 
-    for (int yi = 0; yi + 2 < ytiles; yi += 3)
+    for (int yi = 0; yi < ytiles; yi++)
     {
-        for (int xi = 0; xi + 2 < xtiles; xi += 3)
+        for (int xi = 0; xi < xtiles; xi++)
         {
             {
                 for (size_t i = 0; i < names.size(); i++)
@@ -3845,27 +3914,11 @@ int RealCUGAN::process_cpu_se_very_rough_sync_gap(const ncnn::Mat& inimage, cons
                         for (int ti = 0; ti < 8; ti++)
                         {
                             cache.save(yi, xi, ti, names[i], avgfeats[i]);
-                            cache.save(yi, xi + 1, ti, names[i], avgfeats[i]);
-                            cache.save(yi, xi + 2, ti, names[i], avgfeats[i]);
-                            cache.save(yi + 1, xi, ti, names[i], avgfeats[i]);
-                            cache.save(yi + 1, xi + 1, ti, names[i], avgfeats[i]);
-                            cache.save(yi + 1, xi + 2, ti, names[i], avgfeats[i]);
-                            cache.save(yi + 2, xi, ti, names[i], avgfeats[i]);
-                            cache.save(yi + 2, xi + 1, ti, names[i], avgfeats[i]);
-                            cache.save(yi + 2, xi + 2, ti, names[i], avgfeats[i]);
                         }
                     }
                     else
                     {
                         cache.save(yi, xi, 0, names[i], avgfeats[i]);
-                        cache.save(yi, xi + 1, 0, names[i], avgfeats[i]);
-                        cache.save(yi, xi + 2, 0, names[i], avgfeats[i]);
-                        cache.save(yi + 1, xi, 0, names[i], avgfeats[i]);
-                        cache.save(yi + 1, xi + 1, 0, names[i], avgfeats[i]);
-                        cache.save(yi + 1, xi + 2, 0, names[i], avgfeats[i]);
-                        cache.save(yi + 2, xi, 0, names[i], avgfeats[i]);
-                        cache.save(yi + 2, xi + 1, 0, names[i], avgfeats[i]);
-                        cache.save(yi + 2, xi + 2, 0, names[i], avgfeats[i]);
                     }
                 }
             }
