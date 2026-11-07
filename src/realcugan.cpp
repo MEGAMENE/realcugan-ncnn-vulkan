@@ -2166,6 +2166,25 @@ int RealCUGAN::process_se_sync_gap(const ncnn::Mat& inimage, const std::vector<s
 
     const int tiles = ytiles * xtiles * (tta_mode ? 8 : 1);
 
+    std::vector<float> tile_weights;
+    tile_weights.reserve(tiles);
+    float total_weight = 0.f;
+    for (int yi = 0; yi < ytiles; yi++)
+    {
+        const int tile_h_nopad = std::min((yi + 1) * TILE_SIZE_Y, h) - yi * TILE_SIZE_Y;
+        for (int xi = 0; xi < xtiles; xi++)
+        {
+            const int tile_w_nopad = std::min((xi + 1) * TILE_SIZE_X, w) - xi * TILE_SIZE_X;
+            const float area = (float)(tile_w_nopad * tile_h_nopad);
+            const int tta_count = tta_mode ? 8 : 1;
+            for (int ti = 0; ti < tta_count; ti++)
+            {
+                tile_weights.push_back(area);
+                total_weight += area;
+            }
+        }
+    }
+
     ncnn::VkCompute cmd(vkdev);
 
     // download
@@ -2216,16 +2235,27 @@ int RealCUGAN::process_se_sync_gap(const ncnn::Mat& inimage, const std::vector<s
             for (int j = 0; j < tiles; j++)
             {
                 const ncnn::Mat f = feats_cpu[i][j];
+                const float w_j = tile_weights[j];
 
                 for (int k = 0; k < len; k++)
                 {
-                    avgfeat[k] += f[k];
+                    avgfeat[k] += f[k] * w_j;
                 }
             }
 
-            for (int k = 0; k < len; k++)
+            if (total_weight > 0.f)
             {
-                avgfeat[k] /= tiles;
+                for (int k = 0; k < len; k++)
+                {
+                    avgfeat[k] /= total_weight;
+                }
+            }
+            else
+            {
+                for (int k = 0; k < len; k++)
+                {
+                    avgfeat[k] /= tiles;
+                }
             }
 
             cmd.record_upload(avgfeat, avgfeats[i], opt);
@@ -3394,6 +3424,25 @@ int RealCUGAN::process_cpu_se_sync_gap(const ncnn::Mat& inimage, const std::vect
 
     const int tiles = ytiles * xtiles * (tta_mode ? 8 : 1);
 
+    std::vector<float> tile_weights;
+    tile_weights.reserve(tiles);
+    float total_weight = 0.f;
+    for (int yi = 0; yi < ytiles; yi++)
+    {
+        const int tile_h_nopad = std::min((yi + 1) * TILE_SIZE_Y, h) - yi * TILE_SIZE_Y;
+        for (int xi = 0; xi < xtiles; xi++)
+        {
+            const int tile_w_nopad = std::min((xi + 1) * TILE_SIZE_X, w) - xi * TILE_SIZE_X;
+            const float area = (float)(tile_w_nopad * tile_h_nopad);
+            const int tta_count = tta_mode ? 8 : 1;
+            for (int ti = 0; ti < tta_count; ti++)
+            {
+                tile_weights.push_back(area);
+                total_weight += area;
+            }
+        }
+    }
+
     // global average
     std::vector<ncnn::Mat> avgfeats(names.size());
     for (size_t i = 0; i < names.size(); i++)
@@ -3409,16 +3458,27 @@ int RealCUGAN::process_cpu_se_sync_gap(const ncnn::Mat& inimage, const std::vect
             for (int j = 0; j < tiles; j++)
             {
                 const ncnn::Mat f = feats[i][j];
+                const float w_j = tile_weights[j];
 
                 for (int k = 0; k < len; k++)
                 {
-                    avgfeat[k] += f[k];
+                    avgfeat[k] += f[k] * w_j;
                 }
             }
 
-            for (int k = 0; k < len; k++)
+            if (total_weight > 0.f)
             {
-                avgfeat[k] /= tiles;
+                for (int k = 0; k < len; k++)
+                {
+                    avgfeat[k] /= total_weight;
+                }
+            }
+            else
+            {
+                for (int k = 0; k < len; k++)
+                {
+                    avgfeat[k] /= tiles;
+                }
             }
 
             avgfeats[i] = avgfeat;
