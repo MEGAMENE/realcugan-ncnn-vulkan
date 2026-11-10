@@ -47,58 +47,109 @@ unsigned char* webp_load(const unsigned char* buffer, int len, int* w, int* h, i
     return pixeldata;
 }
 
+enum WebPFormat {
+    WEBP_FMT_AUTO = 0,
+    WEBP_FMT_RGB,
+    WEBP_FMT_BGR,
+    WEBP_FMT_RGBA,
+    WEBP_FMT_BGRA
+};
+
 #if _WIN32
-int webp_save(const wchar_t* filepath, int w, int h, int c, const unsigned char* pixeldata)
+int webp_save(const wchar_t* filepath, int w, int h, int c, const unsigned char* pixeldata, WebPFormat format = WEBP_FMT_AUTO)
 #else
-int webp_save(const char* filepath, int w, int h, int c, const unsigned char* pixeldata)
+int webp_save(const char* filepath, int w, int h, int c, const unsigned char* pixeldata, WebPFormat format = WEBP_FMT_AUTO)
 #endif
 {
     int ret = 0;
-
-    unsigned char* output = 0;
-    size_t length = 0;
-
     FILE* fp = 0;
 
-    if (c == 3)
+    if (c != 3 && c != 4)
+        return 0;
+
+    WebPConfig config;
+    if (!WebPConfigInit(&config))
+        return 0;
+
+    config.lossless = 1;
+    config.exact = 1;
+    config.quality = 75.0f;
+    config.thread_level = 1;
+
+    if (!WebPValidateConfig(&config))
+        return 0;
+
+    WebPPicture picture;
+    if (!WebPPictureInit(&picture))
+        return 0;
+
+    picture.width = w;
+    picture.height = h;
+    picture.use_argb = 1;
+
+    WebPMemoryWriter writer;
+    WebPMemoryWriterInit(&writer);
+    picture.writer = WebPMemoryWrite;
+    picture.custom_ptr = &writer;
+
+    if (format == WEBP_FMT_AUTO)
     {
 #if _WIN32
-        length = WebPEncodeLosslessBGR(pixeldata, w, h, w * 3, &output);
+        format = (c == 4) ? WEBP_FMT_BGRA : WEBP_FMT_BGR;
 #else
-        length = WebPEncodeLosslessRGB(pixeldata, w, h, w * 3, &output);
+        format = (c == 4) ? WEBP_FMT_RGBA : WEBP_FMT_RGB;
 #endif
-    }
-    else if (c == 4)
-    {
-#if _WIN32
-        length = WebPEncodeLosslessBGRA(pixeldata, w, h, w * 4, &output);
-#else
-        length = WebPEncodeLosslessRGBA(pixeldata, w, h, w * 4, &output);
-#endif
-    }
-    else
-    {
-        // unsupported channel type
     }
 
-    if (length == 0)
-        goto RETURN;
+    int import_ok = 0;
+    switch (format)
+    {
+    case WEBP_FMT_RGB:
+        import_ok = WebPPictureImportRGB(&picture, pixeldata, w * 3);
+        break;
+    case WEBP_FMT_BGR:
+        import_ok = WebPPictureImportBGR(&picture, pixeldata, w * 3);
+        break;
+    case WEBP_FMT_RGBA:
+        import_ok = WebPPictureImportRGBA(&picture, pixeldata, w * 4);
+        break;
+    case WEBP_FMT_BGRA:
+        import_ok = WebPPictureImportBGRA(&picture, pixeldata, w * 4);
+        break;
+    default:
+        break;
+    }
+
+    if (!import_ok)
+    {
+        WebPPictureFree(&picture);
+        WebPMemoryWriterClear(&writer);
+        return 0;
+    }
+
+    if (!WebPEncode(&config, &picture))
+    {
+        WebPPictureFree(&picture);
+        WebPMemoryWriterClear(&writer);
+        return 0;
+    }
 
 #if _WIN32
     fp = _wfopen(filepath, L"wb");
 #else
     fp = fopen(filepath, "wb");
 #endif
-    if (!fp)
-        goto RETURN;
+    if (fp && writer.mem && writer.size > 0)
+    {
+        if (fwrite(writer.mem, 1, writer.size, fp) == writer.size)
+        {
+            ret = 1;
+        }
+    }
 
-    fwrite(output, 1, length, fp);
-
-    ret = 1;
-
-RETURN:
-    if (output) WebPFree(output);
     if (fp) fclose(fp);
+    WebPPictureFree(&picture);
+    WebPMemoryWriterClear(&writer);
 
     return ret;
 }
