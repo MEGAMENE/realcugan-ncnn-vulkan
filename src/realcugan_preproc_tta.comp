@@ -9,6 +9,7 @@
 
 layout (constant_id = 0) const int bgr = 0;
 layout (constant_id = 1) const int pro = 0;
+layout (constant_id = 2) const int tta_level = 8;
 
 #if NCNN_int8_storage
 layout (binding = 0) readonly buffer bottom_blob { uint8_t bottom_blob_data[]; };
@@ -88,7 +89,7 @@ void main()
 
         if (gx >= 0 && gx < p.alphaw && gy >= 0 && gy < p.alphah)
         {
-            buffer_st1(alpha_blob_data, gy * p.alphaw + gx, v);
+            buffer_st1(alpha_blob_data, gy * p.alphaw + gx, afp(v));
         }
     }
     else
@@ -100,13 +101,19 @@ void main()
 
         int gzi = gz * p.outcstep;
 
-        buffer_st1(top_blob0_data, gzi + gy * p.outw + gx, v);
-        buffer_st1(top_blob1_data, gzi + gy * p.outw + (p.outw - 1 - gx), v);
-        buffer_st1(top_blob2_data, gzi + (p.outh - 1 - gy) * p.outw + (p.outw - 1 - gx), v);
-        buffer_st1(top_blob3_data, gzi + (p.outh - 1 - gy) * p.outw + gx, v);
-        buffer_st1(top_blob4_data, gzi + gx * p.outh + gy, v);
-        buffer_st1(top_blob5_data, gzi + gx * p.outh + (p.outh - 1 - gy), v);
-        buffer_st1(top_blob6_data, gzi + (p.outw - 1 - gx) * p.outh + (p.outh - 1 - gy), v);
-        buffer_st1(top_blob7_data, gzi + (p.outw - 1 - gx) * p.outh + gy, v);
+        buffer_st1(top_blob0_data, gzi + gy * p.outw + gx, afp(v));
+        buffer_st1(top_blob1_data, gzi + gy * p.outw + (p.outw - 1 - gx), afp(v));
+        if (tta_level >= 4)
+        {
+            buffer_st1(top_blob2_data, gzi + (p.outh - 1 - gy) * p.outw + (p.outw - 1 - gx), afp(v));
+            buffer_st1(top_blob3_data, gzi + (p.outh - 1 - gy) * p.outw + gx, afp(v));
+        }
+        if (tta_level >= 8)
+        {
+            buffer_st1(top_blob4_data, gzi + gx * p.outh + gy, afp(v));
+            buffer_st1(top_blob5_data, gzi + gx * p.outh + (p.outh - 1 - gy), afp(v));
+            buffer_st1(top_blob6_data, gzi + (p.outw - 1 - gx) * p.outh + (p.outh - 1 - gy), afp(v));
+            buffer_st1(top_blob7_data, gzi + (p.outw - 1 - gx) * p.outh + gy, afp(v));
+        }
     }
 }

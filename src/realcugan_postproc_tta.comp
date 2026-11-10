@@ -9,6 +9,7 @@
 
 layout (constant_id = 0) const int bgr = 0;
 layout (constant_id = 1) const int pro = 0;
+layout (constant_id = 2) const int tta_level = 8;
 
 layout (binding = 0) readonly buffer bottom_blob0 { sfp bottom_blob0_data[]; };
 layout (binding = 1) readonly buffer bottom_blob1 { sfp bottom_blob1_data[]; };
@@ -65,14 +66,27 @@ void main()
 
         float v0 = buffer_ld1(bottom_blob0_data, gzi + gy * p.w + gx);
         float v1 = buffer_ld1(bottom_blob1_data, gzi + gy * p.w + (p.w - 1 - gx));
-        float v2 = buffer_ld1(bottom_blob2_data, gzi + (p.h - 1 - gy) * p.w + (p.w - 1 - gx));
-        float v3 = buffer_ld1(bottom_blob3_data, gzi + (p.h - 1 - gy) * p.w + gx);
-        float v4 = buffer_ld1(bottom_blob4_data, gzi + gx * p.h + gy);
-        float v5 = buffer_ld1(bottom_blob5_data, gzi + gx * p.h + (p.h - 1 - gy));
-        float v6 = buffer_ld1(bottom_blob6_data, gzi + (p.w - 1 - gx) * p.h + (p.h - 1 - gy));
-        float v7 = buffer_ld1(bottom_blob7_data, gzi + (p.w - 1 - gx) * p.h + gy);
 
-        v = (v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7) * 0.125f;
+        if (tta_level == 2)
+        {
+            v = (v0 + v1) * 0.5f;
+        }
+        else if (tta_level == 4)
+        {
+            float v2 = buffer_ld1(bottom_blob2_data, gzi + (p.h - 1 - gy) * p.w + (p.w - 1 - gx));
+            float v3 = buffer_ld1(bottom_blob3_data, gzi + (p.h - 1 - gy) * p.w + gx);
+            v = (v0 + v1 + v2 + v3) * 0.25f;
+        }
+        else
+        {
+            float v2 = buffer_ld1(bottom_blob2_data, gzi + (p.h - 1 - gy) * p.w + (p.w - 1 - gx));
+            float v3 = buffer_ld1(bottom_blob3_data, gzi + (p.h - 1 - gy) * p.w + gx);
+            float v4 = buffer_ld1(bottom_blob4_data, gzi + gx * p.h + gy);
+            float v5 = buffer_ld1(bottom_blob5_data, gzi + gx * p.h + (p.h - 1 - gy));
+            float v6 = buffer_ld1(bottom_blob6_data, gzi + (p.w - 1 - gx) * p.h + (p.h - 1 - gy));
+            float v7 = buffer_ld1(bottom_blob7_data, gzi + (p.w - 1 - gx) * p.h + gy);
+            v = (v0 + v1 + v2 + v3 + v4 + v5 + v6 + v7) * 0.125f;
+        }
 
         if (pro == 1)
             v = (v - 0.15f) * (255.f / 0.7f);

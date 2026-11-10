@@ -81,7 +81,7 @@ void main()
 
         if (gx >= 0 && gx < p.alphaw && gy >= 0 && gy < p.alphah)
         {
-            buffer_st1(alpha_blob_data, gy * p.alphaw + gx, v);
+            buffer_st1(alpha_blob_data, gy * p.alphaw + gx, afp(v));
         }
     }
     else
@@ -89,6 +89,6 @@ void main()
         const float norm_scale = (pro == 1) ? (0.7f / 255.f) : (1.f / 255.f);
         const float norm_bias = (pro == 1) ? 0.15f : 0.0f;
 
-        buffer_st1(top_blob_data, gz * p.outcstep + gy * p.outw + gx, v * norm_scale + norm_bias);
+        buffer_st1(top_blob_data, gz * p.outcstep + gy * p.outw + gx, afp(v * norm_scale + norm_bias));
     }
 }
