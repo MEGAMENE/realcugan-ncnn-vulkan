@@ -14,7 +14,7 @@ class FeatureCache;
 class RealCUGAN
 {
 public:
-    RealCUGAN(int gpuid, bool tta_mode = false, int num_threads = 1);
+    RealCUGAN(int gpuid, int tta_level = 1, int num_threads = 1);
     ~RealCUGAN();
 
 #if _WIN32
@@ -58,11 +58,13 @@ public:
     // realcugan parameters
     int noise;
     int scale;
-    int tilesize;
+    mutable int tilesize;
     int prepadding;
     int syncgap;
     bool bgr_mode;
     bool is_pro_model;
+    int tta_level;
+    bool use_fp16_arithmetic;
 
 private:
     ncnn::VulkanDevice* vkdev;
@@ -73,7 +75,6 @@ private:
     ncnn::Layer* bicubic_2x;
     ncnn::Layer* bicubic_3x;
     ncnn::Layer* bicubic_4x;
-    bool tta_mode;
 };
 
 #endif // REALCUGAN_H

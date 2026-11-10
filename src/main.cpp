@@ -112,8 +112,9 @@ static void print_usage()
     fprintf(stdout, "  -m model-path        realcugan model path (default=models-se)\n");
     fprintf(stdout, "  -g gpu-id            gpu device to use (-1=cpu, default=auto) can be 0,1,2 for multi-gpu\n");
     fprintf(stdout, "  -j load:proc:save    thread count for load/proc/save (default=1:2:2) can be 1:2,2,2:2 for multi-gpu\n");
-    fprintf(stdout, "  -x                   enable tta mode\n");
+    fprintf(stdout, "  -x [level]           enable tta mode (1/2/4/8, default=8 if -x given, default=1 if omitted)\n");
     fprintf(stdout, "  -f format            output image format (jpg/png/webp, default=ext/png)\n");
+    fprintf(stdout, "  --fp16-arithmetic    enable fp16 arithmetic (for AMD/Intel GPUs)\n");
 }
 
 class Task
@@ -449,8 +450,27 @@ int main(int argc, char** argv)
     int jobs_save = 2;
     int verbose = 0;
     int syncgap = 3;
-    int tta_mode = 0;
+    int tta_level = 1;
+    bool use_fp16_arithmetic = false;
     path_t format = PATHSTR("png");
+
+    for (int i = 1; i < argc; i++)
+    {
+#if _WIN32
+        if (wcscmp(argv[i], L"--fp16-arithmetic") == 0)
+#else
+        if (strcmp(argv[i], "--fp16-arithmetic") == 0)
+#endif
+        {
+            use_fp16_arithmetic = true;
+            for (int j = i; j < argc - 1; j++)
+            {
+                argv[j] = argv[j + 1];
+            }
+            argc--;
+            i--;
+        }
+    }
 
 #if _WIN32
     setlocale(LC_ALL, "");
@@ -494,7 +514,17 @@ int main(int argc, char** argv)
             verbose = 1;
             break;
         case L'x':
-            tta_mode = 1;
+            tta_level = 8;
+            if (optind < argc && argv[optind][0] != L'-')
+            {
+                wchar_t* endptr = NULL;
+                long val = wcstol(argv[optind], &endptr, 10);
+                if (endptr != argv[optind] && *endptr == L'\0' && (val == 1 || val == 2 || val == 4 || val == 8))
+                {
+                    tta_level = (int)val;
+                    optind++;
+                }
+            }
             break;
         case L'h':
         default:
@@ -543,7 +573,17 @@ int main(int argc, char** argv)
             verbose = 1;
             break;
         case 'x':
-            tta_mode = 1;
+            tta_level = 8;
+            if (optind < argc && argv[optind][0] != '-')
+            {
+                char* endptr = NULL;
+                long val = strtol(argv[optind], &endptr, 10);
+                if (endptr != argv[optind] && *endptr == '\0' && (val == 1 || val == 2 || val == 4 || val == 8))
+                {
+                    tta_level = (int)val;
+                    optind++;
+                }
+            }
             break;
         case 'h':
         default:
@@ -568,6 +608,18 @@ int main(int argc, char** argv)
     if (!(scale == 1 || scale == 2 || scale == 3 || scale == 4))
     {
         fprintf(stderr, "invalid scale argument\n");
+        return -1;
+    }
+
+    if (scale == 4 && model.find(PATHSTR("models-pro")) != path_t::npos)
+    {
+        fprintf(stderr, "models-pro only exists for 2x and 3x scale\n");
+        return -1;
+    }
+
+    if (!(tta_level == 1 || tta_level == 2 || tta_level == 4 || tta_level == 8))
+    {
+        fprintf(stderr, "invalid tta level (must be 1, 2, 4, or 8)\n");
         return -1;
     }
 
@@ -811,7 +863,7 @@ int main(int argc, char** argv)
     }
 
     int total_jobs_proc = 0;
-    int jobs_proc_per_gpu[16] = {0};
+    std::vector<int> jobs_proc_per_gpu(std::max(16, gpu_count), 0);
     for (int i=0; i<use_gpu_count; i++)
     {
         if (gpuid[i] == -1)
@@ -838,57 +890,28 @@ int main(int argc, char** argv)
             continue;
         }
 
-        uint32_t heap_budget = ncnn::get_gpu_device(gpuid[i])->get_heap_budget();
+        const ncnn::VulkanDevice* vkdev = ncnn::get_gpu_device(gpuid[i]);
+        uint32_t heap_budget_mb = vkdev->get_heap_budget();
 
-        if (path_is_directory(inputpath) && path_is_directory(outputpath))
+        int jobs = path_is_directory(inputpath) ? std::max(1, jobs_proc_per_gpu[gpuid[i]]) : 1;
+        double safe_vram = (double)heap_budget_mb * 1024.0 * 1024.0 * 0.70 / (double)jobs;
+
+        double bpp = 7004.0;
+        if (scale == 2) bpp = 7004.0;
+        else if (scale == 3) bpp = 18432.0;
+        else if (scale == 4) bpp = 9011.0;
+
+        int calculated_tile = (int)(sqrt(safe_vram / bpp) - 2.0 * prepadding);
+        calculated_tile = (calculated_tile / 32) * 32;
+
+        int max_tile = 1600;
+        if (vkdev->info.type() == 1)
         {
-            // multiple gpu jobs share the same heap
-            heap_budget /= jobs_proc_per_gpu[gpuid[i]];
+            // integrated GPU
+            max_tile = (scale == 3) ? 256 : 384;
         }
 
-        // more fine-grained tilesize policy here
-        if (model.find(PATHSTR("models-nose")) != path_t::npos || model.find(PATHSTR("models-se")) != path_t::npos || model.find(PATHSTR("models-pro")) != path_t::npos)
-        {
-            if (scale == 2)
-            {
-                if (heap_budget > 1300)
-                    tilesize[i] = 400;
-                else if (heap_budget > 800)
-                    tilesize[i] = 300;
-                else if (heap_budget > 400)
-                    tilesize[i] = 200;
-                else if (heap_budget > 200)
-                    tilesize[i] = 100;
-                else
-                    tilesize[i] = 32;
-            }
-            if (scale == 3)
-            {
-                if (heap_budget > 3300)
-                    tilesize[i] = 400;
-                else if (heap_budget > 1900)
-                    tilesize[i] = 300;
-                else if (heap_budget > 950)
-                    tilesize[i] = 200;
-                else if (heap_budget > 320)
-                    tilesize[i] = 100;
-                else
-                    tilesize[i] = 32;
-            }
-            if (scale == 4)
-            {
-                if (heap_budget > 1690)
-                    tilesize[i] = 400;
-                else if (heap_budget > 980)
-                    tilesize[i] = 300;
-                else if (heap_budget > 530)
-                    tilesize[i] = 200;
-                else if (heap_budget > 240)
-                    tilesize[i] = 100;
-                else
-                    tilesize[i] = 32;
-            }
-        }
+        tilesize[i] = std::max(32, std::min(calculated_tile, max_tile));
     }
 
     {
@@ -898,15 +921,16 @@ int main(int argc, char** argv)
         {
             int num_threads = gpuid[i] == -1 ? jobs_proc[i] : 1;
 
-            realcugan[i] = new RealCUGAN(gpuid[i], tta_mode, num_threads);
-
-            realcugan[i]->load(paramfullpath, modelfullpath);
+            realcugan[i] = new RealCUGAN(gpuid[i], tta_level, num_threads);
 
             realcugan[i]->noise = noise;
             realcugan[i]->scale = scale;
             realcugan[i]->tilesize = tilesize[i];
             realcugan[i]->prepadding = prepadding;
             realcugan[i]->syncgap = syncgap;
+            realcugan[i]->use_fp16_arithmetic = use_fp16_arithmetic;
+
+            realcugan[i]->load(paramfullpath, modelfullpath);
         }
 
         // main routine
