@@ -468,6 +468,7 @@ int main(int argc, char** argv)
                 argv[j] = argv[j + 1];
             }
             argc--;
+            argv[argc] = NULL;
             i--;
         }
     }
@@ -519,10 +520,23 @@ int main(int argc, char** argv)
             {
                 wchar_t* endptr = NULL;
                 long val = wcstol(argv[optind], &endptr, 10);
-                if (endptr != argv[optind] && *endptr == L'\0' && (val == 1 || val == 2 || val == 4 || val == 8))
+                if (endptr != argv[optind] && *endptr == L'\0')
                 {
-                    tta_level = (int)val;
-                    optind++;
+                    if (val == 1 || val == 2 || val == 4 || val == 8)
+                    {
+                        tta_level = (int)val;
+                        optind++;
+                    }
+                    else
+                    {
+                        fwprintf(stderr, L"invalid tta level (must be 1, 2, 4, or 8)\n");
+                        return -1;
+                    }
+                }
+                else
+                {
+                    fwprintf(stderr, L"invalid tta level (must be 1, 2, 4, or 8)\n");
+                    return -1;
                 }
             }
             break;
@@ -578,10 +592,23 @@ int main(int argc, char** argv)
             {
                 char* endptr = NULL;
                 long val = strtol(argv[optind], &endptr, 10);
-                if (endptr != argv[optind] && *endptr == '\0' && (val == 1 || val == 2 || val == 4 || val == 8))
+                if (endptr != argv[optind] && *endptr == '\0')
                 {
-                    tta_level = (int)val;
-                    optind++;
+                    if (val == 1 || val == 2 || val == 4 || val == 8)
+                    {
+                        tta_level = (int)val;
+                        optind++;
+                    }
+                    else
+                    {
+                        fprintf(stderr, "invalid tta level (must be 1, 2, 4, or 8)\n");
+                        return -1;
+                    }
+                }
+                else
+                {
+                    fprintf(stderr, "invalid tta level (must be 1, 2, 4, or 8)\n");
+                    return -1;
                 }
             }
             break;

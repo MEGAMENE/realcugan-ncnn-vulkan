@@ -7,7 +7,7 @@
 #include "webp/decode.h"
 #include "webp/encode.h"
 
-unsigned char* webp_load(const unsigned char* buffer, int len, int* w, int* h, int* c)
+static inline unsigned char* webp_load(const unsigned char* buffer, int len, int* w, int* h, int* c)
 {
     unsigned char* pixeldata = 0;
 
@@ -56,9 +56,9 @@ enum WebPFormat {
 };
 
 #if _WIN32
-int webp_save(const wchar_t* filepath, int w, int h, int c, const unsigned char* pixeldata, WebPFormat format = WEBP_FMT_AUTO)
+static inline int webp_save(const wchar_t* filepath, int w, int h, int c, const unsigned char* pixeldata, WebPFormat format = WEBP_FMT_AUTO)
 #else
-int webp_save(const char* filepath, int w, int h, int c, const unsigned char* pixeldata, WebPFormat format = WEBP_FMT_AUTO)
+static inline int webp_save(const char* filepath, int w, int h, int c, const unsigned char* pixeldata, WebPFormat format = WEBP_FMT_AUTO)
 #endif
 {
     int ret = 0;

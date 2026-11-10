@@ -4,7 +4,7 @@
 // image decoder and encoder with WIC
 #include <wincodec.h>
 
-unsigned char* wic_decode_image(const wchar_t* filepath, int* w, int* h, int* c)
+static inline unsigned char* wic_decode_image(const wchar_t* filepath, int* w, int* h, int* c)
 {
     IWICImagingFactory* factory = 0;
     IWICBitmapDecoder* decoder = 0;
@@ -110,7 +110,7 @@ RETURN:
     return bgrdata;
 }
 
-int wic_encode_image(const wchar_t* filepath, int w, int h, int c, void* bgrdata)
+static inline int wic_encode_image(const wchar_t* filepath, int w, int h, int c, void* bgrdata)
 {
     IWICImagingFactory* factory = 0;
     IWICStream* stream = 0;
@@ -183,7 +183,7 @@ RETURN:
     return ret;
 }
 
-int wic_encode_jpeg_image(const wchar_t* filepath, int w, int h, int c, void* bgrdata)
+static inline int wic_encode_jpeg_image(const wchar_t* filepath, int w, int h, int c, void* bgrdata)
 {
     // assert c == 3
 
