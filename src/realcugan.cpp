@@ -106,46 +106,6 @@ static std::string get_pipeline_cache_path(int gpuid)
 }
 #endif
 
-template <typename StringType>
-static bool check_pro_model(const StringType& path)
-{
-    size_t last_sep = path.find_last_of(
-#if _WIN32
-        L"/\\"
-#else
-        "/\\"
-#endif
-    );
-    StringType filename = (last_sep == StringType::npos) ? path : path.substr(last_sep + 1);
-    StringType parent_dir;
-    if (last_sep != StringType::npos)
-    {
-        size_t prev_sep = path.find_last_of(
-#if _WIN32
-            L"/\\",
-#else
-            "/\\",
-#endif
-            last_sep == 0 ? StringType::npos : last_sep - 1
-        );
-        if (prev_sep == StringType::npos)
-            parent_dir = path.substr(0, last_sep);
-        else
-            parent_dir = path.substr(prev_sep + 1, last_sep - prev_sep - 1);
-    }
-
-#if _WIN32
-    const wchar_t* token = L"-pro";
-#else
-    const char* token = "-pro";
-#endif
-    if (parent_dir.find(token) != StringType::npos || filename.find(token) != StringType::npos)
-    {
-        return true;
-    }
-    return false;
-}
-
 RealCUGAN::RealCUGAN(int _gpuid, int _tta_level, int num_threads)
 {
     vkdev = _gpuid == -1 ? 0 : ncnn::get_gpu_device(_gpuid);
@@ -239,13 +199,8 @@ int RealCUGAN::load(const std::string& parampath, const std::string& modelpath)
 #endif
 {
     is_pro_model = false;
-    if (this->scale == 2 || this->scale == 3)
-    {
-        if (check_pro_model(parampath) || check_pro_model(modelpath))
-        {
-            is_pro_model = true;
-        }
-    }
+    // Pro models in NCNN are exported for standard [0, 1] range like Se/Nose models.
+    // Custom 0.7/0.15 normalization severely distorts all colors.
 
     net.opt.use_vulkan_compute = vkdev ? true : false;
     net.opt.use_fp16_packed = vkdev ? vkdev->info.support_fp16_packed() : true;
